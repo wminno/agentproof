@@ -1,0 +1,4 @@
+.secret_key
+receipts.jsonl
+server.log
+__pycache__/
