@@ -209,6 +209,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        self._alog()
         p = urlparse(self.path).path
         if p == "/api/health":
             n = 0
@@ -236,6 +237,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found", "endpoints": ["/api/receipt", "/api/verify", "/receipt/<id>", "/api/health"]})
 
     def do_POST(self):
+        self._alog()
         if not self._rl():
             self._drain()
             return self._json(429, {"error": "rate limit: 30/min per IP"})
@@ -268,6 +270,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"valid": bool(same), "note": "record unchanged since issue" if same else "signature does not match record",
                                     "receipt": cur})
         return self._json(404, {"error": "not found"})
+
+
+    def _alog(self):
+        try:
+            ip = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip() or self.client_address[0]
+            with open(STORE.replace("receipts.jsonl", "hits.log"), "a") as f:
+                f.write("%s %s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), ip, urlparse(self.path).path))
+        except Exception:
+            pass
 
     def log_message(self, fmt, *args):
         pass
