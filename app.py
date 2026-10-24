@@ -78,6 +78,11 @@ def esc(s):
 
 LAND = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta property="og:title" content="AgentProof - signed work receipts for AI agents">
+<meta property="og:description" content="Notarize what an AI agent produced: HMAC-signed, verifiable work receipts with a tamper check. Free API, no signup.">
+<meta property="og:url" content="https://workreceipts.bigfloppy.net/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
 <title>AgentProof - signed work receipts for AI agents</title>
 <style>body{font-family:ui-monospace,Menlo,monospace;max-width:760px;margin:2rem auto;padding:0 1rem;color:#111}
 h1{font-size:1.5rem} code,pre{background:#f4f4f4;padding:2px 5px;border-radius:4px}
@@ -153,14 +158,48 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         self._send(code, json.dumps(obj, indent=1), "application/json")
 
+    def _drain(self):
+        # read any unread request body so keep-alive connections stay in sync
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        n = min(n, 5000000)
+        while n > 0:
+            chunk = self.rfile.read(min(n, 65536))
+            if not chunk:
+                break
+            n -= len(chunk)
+
     def _body(self):
         try:
-            n = int(self.headers.get("Content-Length", "0"))
-            if n > 200000:
-                return None
-            return json.loads(self.rfile.read(n) or b"{}")
+            n = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            n = 0
+        if n > 200000:
+            self._drain()
+            return None
+        try:
+            raw = self.rfile.read(n) if n > 0 else b""
+            return json.loads(raw or b"{}")
         except Exception:
             return None
+
+    def _empty(self, code, ctype="text/html; charset=utf-8"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_HEAD(self):
+        # HEAD = GET status without body; link checkers / HN treat 501 as a dead site
+        p = urlparse(self.path).path
+        if p == "/api/health" or p in ("/", "/api") \
+           or re.fullmatch(r"/receipt/([a-f0-9]{10})", p) \
+           or re.fullmatch(r"/api/receipt/([a-f0-9]{10})", p):
+            return self._empty(200)
+        self._drain()
+        return self._empty(404)
 
     def _rl(self):
         ip = self.client_address[0]
@@ -193,10 +232,12 @@ class Handler(BaseHTTPRequestHandler):
         if p in ("/", "/api"):
             example = load("bootreceipt1") or {}
             return self._send(200, LAND + (receipt_box(example) if example else "") + TAIL, "text/html")
+        self._drain()
         return self._json(404, {"error": "not found", "endpoints": ["/api/receipt", "/api/verify", "/receipt/<id>", "/api/health"]})
 
     def do_POST(self):
         if not self._rl():
+            self._drain()
             return self._json(429, {"error": "rate limit: 30/min per IP"})
         p = urlparse(self.path).path
         d = self._body()
